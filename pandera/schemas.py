@@ -123,10 +123,16 @@ class DataFrameSchema():
 
         self.columns = {} if columns is None else columns
 
-        if coerce and None in [c.pandas_dtype for c in self.columns.values()]:
-            raise errors.SchemaInitError(
-                "Must specify dtype in all Columns if coercing "
-                "DataFrameSchema")
+        if coerce:
+            missing_pandas_type = [
+                name for name, col in self.columns.items()
+                if col.pandas_dtype is None
+            ]
+            if missing_pandas_type:
+                raise errors.SchemaInitError(
+                    "Must specify dtype in all Columns if coercing "
+                    "DataFrameSchema ; columns with missing pandas_type:" +
+                    ", ".join(missing_pandas_type))
 
         self.checks = checks
         self.index = index
@@ -383,7 +389,7 @@ class DataFrameSchema():
                 )
 
             elif col_schema.coerce or self.coerce:
-                check_obj[colname] = col_schema.coerce_dtype(
+                check_obj.loc[:, colname] = col_schema.coerce_dtype(
                     check_obj[colname])
 
         schema_components = [
@@ -582,6 +588,26 @@ class DataFrameSchema():
         """
         import pandera.io  # pylint: disable-all
         return pandera.io.to_yaml(self, fp)
+    
+    def rename_columns(self, rename_dict: dict):
+        """Rename columns using a dictionary of key value pairs 
+        
+        :param rename_dict: Dictionary of 'old_name':'new_name' key-value pairs.
+        :returns: dataframe schema (copy of original)
+        """
+        
+        # We iterate over the existing columns dict and replace those keys
+        # that exist in the rename_dict
+        new_schema = copy.deepcopy(self)
+        new_columns = {
+            (rename_dict[col_name] if col_name in rename_dict else col_name): col_attrs
+            for col_name, col_attrs in self.columns.items()
+        }
+        
+        new_schema.columns = new_columns
+ 
+        return new_schema
+        
 
 
 class SeriesSchemaBase():
@@ -726,7 +752,14 @@ class SeriesSchemaBase():
             # only coerce non-null elements to string
             return series_or_index.where(
                 series_or_index.isna(), series_or_index.astype(str))
-        return series_or_index.astype(self.dtype)
+
+        try:
+            return series_or_index.astype(self.dtype)
+        except TypeError as exc:
+            msg = "Error while coercing '%s' to type %s" % (
+                self.name, self.dtype
+            )
+            raise TypeError(msg) from exc
 
     @property
     def _allow_groupby(self):
@@ -1052,7 +1085,7 @@ def _handle_check_results(
                 schema, check, check_index)
         else:
             failure_cases = reshape_failure_cases(
-                check_result.failure_cases)
+                check_result.failure_cases, check.ignore_na)
             error_msg = format_vectorized_error_message(
                 schema, check, check_index, failure_cases)
 
